@@ -1,35 +1,48 @@
 {
   "name": "shopee-scraper-api",
   "version": "1.0.0",
-  "description": "Undetectable Shopee Scraper API",
-  "main": "dist/index.js",
+  "description": "Undetectable Shopee Web Scraper API",
+  "main": "src/index.ts",
   "scripts": {
-    "start": "node dist/index.js",
-    "dev": "nodemon src/index.ts",
+    "dev": "ts-node src/index.ts",
     "build": "tsc",
-    "clean": "rm -rf dist"
+    "start": "node dist/index.js",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts"
   },
+  "keywords": [
+    "shopee",
+    "scraper",
+    "api",
+    "web-scraping"
+  ],
+  "author": "Perdana Carrer",
+  "license": "MIT",
   "dependencies": {
-    "axios": "^1.6.0",
-    "cors": "^2.8.5",
+    "axios": "^1.6.5",
+    "cors": "^2.8.6",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "express-rate-limit": "^6.10.0",
-    "helmet": "^7.0.0",
-    "node-cache": "^5.1.2",
+    "http-proxy-agent": "^9.1.0",
+    "https-proxy-agent": "^9.1.0",
+    "puppeteer": "^21.0.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-adblocker": "^2.13.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "winston": "^3.11.0"
+    "user-agents": "^1.0.1025",
+    "uuid": "^9.0.0"
   },
   "devDependencies": {
-    "@types/cors": "^2.8.15",
-    "@types/express": "^4.17.21",
-    "@types/helmet": "^4.0.0",
-    "@types/node": "^20.8.10",
-    "@types/puppeteer": "^5.4.7",
-    "nodemon": "^3.0.1",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.17",
+    "@types/jest": "^29.5.2",
+    "@types/node": "^20.3.1",
+    "@types/user-agents": "^1.0.4",
+    "@typescript-eslint/eslint-plugin": "^5.59.11",
+    "@typescript-eslint/parser": "^5.59.11",
+    "eslint": "^8.43.0",
+    "jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
     "ts-node": "^10.9.1",
-    "typescript": "^5.2.2"
+    "typescript": "^5.1.3"
   }
 }

@@ -1,151 +1,112 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import cors from 'cors';
-import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
-import { ShopeeScraper } from './scraper';
-import { CacheManager } from './cache';
-import { logger } from './logger';
+import dotenv from 'dotenv';
+import { scrapePcEndpoint } from './services/scraper';
+import { getProxyStats } from './services/proxy';
+
+dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
+const NODE_ENV = process.env.NODE_ENV || 'development';
 
-// Middleware
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }
-}));
-app.use(cors());
 app.use(express.json());
-
-// Rate limiting - lebih longgar untuk testing
-const limiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  message: 'Too many requests, please slow down.'
-});
-app.use('/api/shopee', limiter);
-
-// Initialize
-const cache = new CacheManager(600);
-const scraper = new ShopeeScraper(cache);
+app.use(cors());
 
 // Health check
-app.get('/health', (_req, res) => {
+app.get('/health', (_req: Request, res: Response) => {
   res.json({ 
-    status: 'healthy', 
+    status: 'ok', 
     timestamp: new Date().toISOString(),
-    puppeteerAvailable: true // Will show if puppeteer is loaded
+    service: 'Shopee Scraper API',
+    environment: NODE_ENV,
+    scraperAPI: process.env.USE_SCRAPER_API === 'true' ? 'ENABLED' : 'DISABLED',
+    proxy: getProxyStats()
   });
 });
 
-// Test connection endpoint
-app.get('/api/test', async (_req, res) => {
+// Main scraping endpoint
+app.get('/shopee', async (req: Request, res: Response) => {
   try {
-    const result = await scraper.testConnection();
-    res.json(result);
-  } catch (error) {
-    res.json({ 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
-  }
-});
+    const { storeid, dealid } = req.query;
 
-// Single item scraping
-app.get('/api/shopee', async (req, res) => {
-  try {
-    const { storeId, dealId } = req.query;
-
-    if (!storeId || !dealId) {
+    if (!storeid || !dealid) {
       return res.status(400).json({
-        error: 'Missing required parameters: storeId and dealId are required'
+        error: 'Missing required parameters',
+        required: ['storeid', 'dealid'],
+        example: '/shopee?storeid={STORE_ID}&dealid={PRODUCT_ID}'
       });
     }
 
-    const storeIdStr = String(storeId);
-    const dealIdStr = String(dealId);
-
-    if (!/^\d+$/.test(storeIdStr) || !/^\d+$/.test(dealIdStr)) {
-      return res.status(400).json({
-        error: 'Invalid parameters: storeId and dealId must be numeric'
-      });
-    }
-
-    logger.info(`Scraping data for storeId: ${storeIdStr}, dealId: ${dealIdStr}`);
-    const data = await scraper.scrapeItem(storeIdStr, dealIdStr);
-
+    const data = await scrapePcEndpoint(String(storeid), String(dealid));
     return res.json(data);
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    logger.error('Error in /api/shopee endpoint:', error);
+  } catch (error: any) {
+    console.error('API Error:', error.message);
     return res.status(500).json({
-      error: 'Failed to scrape product data',
-      message: errorMessage
+      error: 'Failed to scrape data',
+      message: error.message
     });
   }
 });
 
-// Batch scraping
-app.post('/api/shopee/batch', async (req, res) => {
-  try {
-    const { items } = req.body;
-
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({
-        error: 'Invalid request: items array is required'
-      });
-    }
-
-    if (items.length > 10) {
-      return res.status(400).json({
-        error: 'Maximum 10 items per batch request'
-      });
-    }
-
-    const results = [];
-    const errors = [];
-
-    for (const item of items) {
-      try {
-        const { storeId, dealId } = item;
-        if (!storeId || !dealId) {
-          errors.push({ item, error: 'Missing storeId or dealId' });
-          continue;
-        }
-
-        const data = await scraper.scrapeItem(String(storeId), String(dealId));
-        results.push({ storeId, dealId, data });
-        
-        // Delay between requests
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        errors.push({ item, error: errorMessage });
-      }
-    }
-
-    return res.json({
-      success: results.length,
-      failed: errors.length,
-      results,
-      errors
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    logger.error('Error in batch endpoint:', error);
-    return res.status(500).json({
-      error: 'Batch scraping failed',
-      message: errorMessage
-    });
-  }
+// Config endpoint
+app.get('/config', (_req: Request, res: Response) => {
+  res.json({
+    environment: NODE_ENV,
+    port: PORT,
+    scraper: {
+      timeout: parseInt(process.env.SCRAPER_TIMEOUT || '30000', 10),
+      retries: parseInt(process.env.SCRAPER_RETRIES || '3', 10),
+      retryDelay: parseInt(process.env.SCRAPER_RETRY_DELAY || '1000', 10),
+      rateLimit: parseInt(process.env.SCRAPER_RATE_LIMIT || '10', 10)
+    },
+    scraperAPI: {
+      enabled: process.env.USE_SCRAPER_API === 'true',
+      keyConfigured: !!process.env.SCRAPER_API_KEY
+    },
+    proxy: getProxyStats(),
+    userAgentsCount: (process.env.USER_AGENTS || '').split(',').length
+  });
 });
 
-// Start server
-app.listen(port, () => {
-  logger.info(`Shopee Scraper API running on port ${port}`);
-  logger.info(`Health check: http://localhost:${port}/health`);
-  logger.info(`Test connection: http://localhost:${port}/api/test`);
-  logger.info(`Scrape endpoint: http://localhost:${port}/api/shopee?storeId=STORE_ID&dealId=DEAL_ID`);
-  logger.info(`Batch endpoint: http://localhost:${port}/api/shopee/batch`);
+// Info endpoint
+app.get('/info', (_req: Request, res: Response) => {
+  res.json({
+    name: 'Shopee Scraper API',
+    version: '1.0.0',
+    endpoints: {
+      health: '/health',
+      config: '/config',
+      scrape: '/shopee?storeid={STORE_ID}&dealid={PRODUCT_ID}',
+      info: '/info'
+    },
+    scraperMode: process.env.USE_SCRAPER_API === 'true' ? 'ScraperAPI' : 'Direct Proxy',
+    notes: 'Configure SCRAPER_API_KEY in .env for best results'
+  });
 });
 
-export default app;
+const server = app.listen(PORT, () => {
+  const protocol = 'http';
+  const host = 'localhost';
+  const mode = process.env.USE_SCRAPER_API === 'true' ? '🤖 ScraperAPI Mode' : '🔗 Direct Proxy Mode';
+  
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`  Shopee Scraper API - ${mode}`);
+  console.log(`${'='.repeat(60)}`);
+  console.log(`\nEnvironment: ${NODE_ENV}`);
+  console.log(`Server running on: ${protocol}://${host}:${PORT}`);
+  console.log(`\nAvailable endpoints:`);
+  console.log(`  • Health:  ${protocol}://${host}:${PORT}/health`);
+  console.log(`  • Config:  ${protocol}://${host}:${PORT}/config`);
+  console.log(`  • Scrape:  ${protocol}://${host}:${PORT}/shopee?storeid={STORE_ID}&dealid={PRODUCT_ID}`);
+  console.log(`  • Info:    ${protocol}://${host}:${PORT}/info`);
+  console.log(`\n${'='.repeat(60)}\n`);
+});
+
+process.on('SIGINT', () => {
+  console.log('\n\nShutting down gracefully...');
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});

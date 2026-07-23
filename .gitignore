@@ -1,11 +1,11 @@
 node_modules/
 dist/
-logs/
 .env
-*.log
+.env.local
 .DS_Store
+*.log
 coverage/
-.nyc_output/
+.idea/
 .vscode/
-*.swp
-*.swo
+npm-debug.log*
+yarn-error.log*
