@@ -1,8 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
 import { delay, retryWithBackoff } from '../utils/helpers';
 import { createProxyAgent } from './proxy';
+import { parseProductData } from '../utils/parser';
 import dotenv from 'dotenv';
-import crypto from 'crypto';
 
 dotenv.config();
 
@@ -11,6 +11,7 @@ const DEFAULT_USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15'
 ];
 
 class ShopeeScraper {
@@ -22,12 +23,15 @@ class ShopeeScraper {
   private maxRetries: number;
   private retryDelay: number;
   private rateLimit: number;
+  private cache: Map<string, { data: any; timestamp: number }> = new Map();
+  private cacheTTL: number;
 
   constructor() {
     this.timeout = parseInt(process.env.SCRAPER_TIMEOUT || '30000', 10);
     this.maxRetries = parseInt(process.env.SCRAPER_RETRIES || '3', 10);
     this.retryDelay = parseInt(process.env.SCRAPER_RETRY_DELAY || '1000', 10);
-    this.rateLimit = parseInt(process.env.SCRAPER_RATE_LIMIT || '10', 10);
+    this.rateLimit = parseInt(process.env.SCRAPER_RATE_LIMIT || '5', 10);
+    this.cacheTTL = parseInt(process.env.CACHE_TTL || '600', 10) * 1000;
 
     this.userAgents = process.env.USER_AGENTS
       ? process.env.USER_AGENTS.split(',').map(ua => ua.trim())
@@ -38,13 +42,15 @@ class ShopeeScraper {
     console.log(`  • Max Retries: ${this.maxRetries}`);
     console.log(`  • Retry Delay: ${this.retryDelay}ms`);
     console.log(`  • Rate Limit: ${this.rateLimit} requests/sec`);
+    console.log(`  • Cache TTL: ${this.cacheTTL / 1000}s`);
     console.log(`  • User Agents: ${this.userAgents.length}`);
 
     this.client = axios.create({
       timeout: this.timeout,
       validateStatus: () => true,
       httpAgent: createProxyAgent('http'),
-      httpsAgent: createProxyAgent('https')
+      httpsAgent: createProxyAgent('https'),
+      decompress: true
     });
   }
 
@@ -53,7 +59,7 @@ class ShopeeScraper {
     
     return {
       'User-Agent': userAgent,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/avif,*/*;q=0.8',
       'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
       'Accept-Encoding': 'gzip, deflate, br',
       'DNT': '1',
@@ -64,7 +70,8 @@ class ShopeeScraper {
       'Sec-Fetch-Site': 'none',
       'Sec-Fetch-User': '?1',
       'Cache-Control': 'max-age=0',
-      'Referer': referer
+      'Referer': referer,
+      'Pragma': 'no-cache'
     };
   }
 
@@ -82,8 +89,34 @@ class ShopeeScraper {
       'Sec-Fetch-Dest': 'empty',
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-origin',
-      'X-Requested-With': 'XMLHttpRequest'
+      'X-Requested-With': 'XMLHttpRequest',
+      'X-API-Source': 'pc'
     };
+  }
+
+  private getCacheKey(storeId: string, dealId: string): string {
+    return `${storeId}:${dealId}`;
+  }
+
+  private getFromCache(storeId: string, dealId: string): any | null {
+    const key = this.getCacheKey(storeId, dealId);
+    const cached = this.cache.get(key);
+    
+    if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
+      console.log(`[CACHE] Cache hit for ${key}`);
+      return cached.data;
+    }
+    
+    if (cached) {
+      this.cache.delete(key);
+    }
+    
+    return null;
+  }
+
+  private setCache(storeId: string, dealId: string, data: any): void {
+    const key = this.getCacheKey(storeId, dealId);
+    this.cache.set(key, { data, timestamp: Date.now() });
   }
 
   private async respectRateLimit() {
@@ -99,89 +132,10 @@ class ShopeeScraper {
       
       this.lastRequestTime = Date.now();
     } else {
-      await delay(Math.random() * 1500 + 800);
+      await delay(Math.random() * 1000 + 500);
     }
   }
 
-  /**
-   * Extract initial state from HTML page
-   * Shopee embeds initial data in window.__INITIAL_STATE__
-   */
-  private extractInitialState(html: string): any {
-    try {
-      // Pattern 1: Look for window.__INITIAL_STATE__ = {...}
-      const pattern1 = /window\.__INITIAL_STATE__\s*=\s*(\{.*?\});/s;
-      const match1 = html.match(pattern1);
-      if (match1) {
-        console.log(`[EXTRACT] Found __INITIAL_STATE__`);
-        return JSON.parse(match1[1]);
-      }
-
-      // Pattern 2: Look for data in script tag with id
-      const scriptPattern = /<script[^>]*id="[^"]*"[^>]*>({[\s\S]*?})<\/script>/;
-      const scriptMatch = html.match(scriptPattern);
-      if (scriptMatch) {
-        console.log(`[EXTRACT] Found data in script tag`);
-        return JSON.parse(scriptMatch[1]);
-      }
-
-      // Pattern 3: Look for SSR payload
-      const ssrPattern = /<script[^>]*>(.*?__SHOPEE.*?)<\/script>/s;
-      const ssrMatch = html.match(ssrPattern);
-      if (ssrMatch) {
-        console.log(`[EXTRACT] Found SSR data`);
-        const dataStr = ssrMatch[1];
-        const jsonMatch = dataStr.match(/(\{.*\})/);
-        if (jsonMatch) {
-          return JSON.parse(jsonMatch[1]);
-        }
-      }
-
-      return null;
-    } catch (error) {
-      console.error(`[EXTRACT] Failed to extract initial state:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * Extract product data dari HTML secara manual
-   */
-  private extractProductDataFromHTML(html: string, dealId: string): any {
-    try {
-      // Extract title
-      const titleMatch = html.match(/<h1[^>]*>([^<]+)<\/h1>|<meta[^>]*property="og:title"[^>]*content="([^"]*)"/);
-      const title = titleMatch ? (titleMatch[1] || titleMatch[2]) : 'Unknown Product';
-
-      // Extract price
-      const priceMatch = html.match(/price['"]\s*:\s*(\d+)|₹\s*([\d,]+)|NT\$\s*([\d,]+)/);
-      const price = priceMatch ? parseInt((priceMatch[1] || priceMatch[2] || priceMatch[3]).replace(/,/g, '')) : 0;
-
-      // Extract description
-      const descMatch = html.match(/<meta[^>]*property="og:description"[^>]*content="([^"]*)"/);
-      const description = descMatch ? descMatch[1] : '';
-
-      // Extract image
-      const imageMatch = html.match(/<meta[^>]*property="og:image"[^>]*content="([^"]*)"/);
-      const image = imageMatch ? imageMatch[1] : '';
-
-      console.log(`[EXTRACT] Manually extracted product data`);
-
-      return {
-        title,
-        price,
-        description,
-        image
-      };
-    } catch (error) {
-      console.error(`[EXTRACT] Failed to manually extract data:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * Fetch product page HTML
-   */
   async fetchProductPage(dealId: string, storeId: string): Promise<string> {
     return retryWithBackoff(async () => {
       await this.respectRateLimit();
@@ -189,14 +143,14 @@ class ShopeeScraper {
       const url = `https://shopee.tw/view/${dealId}`;
       const headers = this.generateHeaders(url);
 
-      console.log(`[PAGE] Fetching product page: ${url}`);
+      console.log(`[PAGE] Fetching: ${url}`);
 
       const response = await this.client.get(url, { headers });
 
-      console.log(`[PAGE] Response status: ${response.status}`);
+      console.log(`[PAGE] Status: ${response.status} | Size: ${JSON.stringify(response.data).length} bytes`);
 
       if (response.status === 200 && response.data) {
-        console.log(`[PAGE] ✓ Got page HTML`);
+        console.log(`[PAGE] ✓ Success`);
         return response.data;
       } else if (response.status === 403) {
         throw new Error('403 Forbidden - IP blocked');
@@ -208,31 +162,30 @@ class ShopeeScraper {
     }, this.maxRetries, this.retryDelay);
   }
 
-  /**
-   * Fetch product API data directly
-   */
   async fetchProductAPI(dealId: string, storeId: string): Promise<any> {
     return retryWithBackoff(async () => {
       await this.respectRateLimit();
 
       const params = {
         item_id: dealId,
-        shop_id: storeId
+        shop_id: storeId,
+        pc_cluster: '',
+        client_source: 'pc'
       };
 
       const headers = this.generateAPIHeaders(`https://shopee.tw/view/${dealId}`);
 
-      console.log(`[API] Fetching API: item_id=${dealId}, shop_id=${storeId}`);
+      console.log(`[API] Fetching item_id=${dealId}, shop_id=${storeId}`);
 
       const response = await this.client.get('https://shopee.tw/api/v4/pdp/get_pc', {
         params,
         headers
       });
 
-      console.log(`[API] Response status: ${response.status}`);
+      console.log(`[API] Status: ${response.status}`);
 
       if (response.status === 200 && response.data && response.data.data) {
-        console.log(`[API] ✓ Got API response`);
+        console.log(`[API] ✓ Success`);
         return response.data;
       } else if (response.status === 403) {
         throw new Error('403 Forbidden');
@@ -244,55 +197,44 @@ class ShopeeScraper {
     }, this.maxRetries, this.retryDelay);
   }
 
-  /**
-   * Fetch product data - try multiple strategies
-   */
   async fetchProductData(storeId: string, dealId: string): Promise<any> {
     console.log(`\n[SCRAPER] Attempting to fetch product data...`);
+
+    // Check cache first
+    const cached = this.getFromCache(storeId, dealId);
+    if (cached) {
+      return cached;
+    }
 
     // Strategy 1: Try API directly
     try {
       console.log(`[STRATEGY 1] Trying direct API...`);
       const apiData = await this.fetchProductAPI(dealId, storeId);
       if (apiData && apiData.data) {
+        this.setCache(storeId, dealId, apiData);
         return apiData;
       }
     } catch (error: any) {
       console.log(`[STRATEGY 1] Failed: ${error.message}`);
     }
 
-    // Strategy 2: Fetch page and extract embedded data
+    // Strategy 2: Fetch page and parse with Cheerio
     try {
-      console.log(`[STRATEGY 2] Fetching page for embedded data...`);
+      console.log(`[STRATEGY 2] Fetching page and parsing HTML...`);
       const html = await this.fetchProductPage(dealId, storeId);
-
-      // Try to extract initial state
-      const initialState = this.extractInitialState(html);
-      if (initialState) {
-        return {
-          bff_meta: null,
-          error: null,
-          error_msg: null,
-          data: initialState
-        };
-      }
-
-      // Fallback: Extract data from HTML manually
-      const extractedData = this.extractProductDataFromHTML(html, dealId);
-      if (extractedData) {
-        return {
+      
+      const parsedData = parseProductData(html, dealId, storeId);
+      if (parsedData) {
+        const result = {
           bff_meta: null,
           error: null,
           error_msg: null,
           data: {
-            item: {
-              ...extractedData,
-              item_id: parseInt(dealId),
-              shop_id: parseInt(storeId),
-              status: 'normal'
-            }
+            item: parsedData
           }
         };
+        this.setCache(storeId, dealId, result);
+        return result;
       }
     } catch (error: any) {
       console.log(`[STRATEGY 2] Failed: ${error.message}`);
@@ -316,10 +258,21 @@ class ShopeeScraper {
           status: 'normal',
           brand: 'Sample Brand',
           shop_name: `Shop ${storeId}`,
-          description: `Note: ${reason}`
+          description: `Note: ${reason}`,
+          images: [],
+          rating: { rating_star: 5, rating_count: 0 }
         }
       }
     };
+  }
+
+  clearCache(): void {
+    this.cache.clear();
+    console.log('[CACHE] Cache cleared');
+  }
+
+  getCacheSize(): number {
+    return this.cache.size;
   }
 }
 
@@ -340,6 +293,7 @@ export async function scrapePcEndpoint(storeId: string, dealId: string): Promise
     console.log(`Starting scrape:`);
     console.log(`  • Item ID: ${dealId}`);
     console.log(`  • Shop ID: ${storeId}`);
+    console.log(`  • Cache Size: ${scraperInstance.getCacheSize()} items`);
     console.log(`${'='.repeat(60)}`);
 
     const data = await scraperInstance.fetchProductData(storeId, dealId);
@@ -354,4 +308,19 @@ export async function scrapePcEndpoint(storeId: string, dealId: string): Promise
     console.error(`\n✗ ERROR: ${error.message}\n`);
     return scraperInstance.generateMockData(storeId, dealId, `Error: ${error.message}`);
   }
+}
+
+export function clearScraperCache(): void {
+  if (scraper) {
+    scraper.clearCache();
+  }
+}
+
+export function getScraperStats() {
+  if (!scraper) {
+    return { cacheSize: 0 };
+  }
+  return {
+    cacheSize: scraper.getCacheSize()
+  };
 }

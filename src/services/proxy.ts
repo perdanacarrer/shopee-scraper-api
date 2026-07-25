@@ -48,7 +48,6 @@ function getNextProxy(): string | null {
     proxyConfig.currentIndex = (proxyConfig.currentIndex + 1) % proxyConfig.list.length;
     return proxy;
   } else {
-    // Random strategy
     const randomIndex = Math.floor(Math.random() * proxyConfig.list.length);
     return proxyConfig.list[randomIndex];
   }
@@ -58,7 +57,7 @@ export function createProxyAgent(protocol: 'http' | 'https'): http.Agent | https
   const AgentClass = protocol === 'http' ? http.Agent : https.Agent;
 
   if (!proxyConfig.enabled) {
-    console.log(`[PROXY] Proxy disabled`);
+    console.log(`[PROXY] Proxy disabled - using direct connection`);
     return new AgentClass({
       keepAlive: true,
       keepAliveMsecs: 1000,

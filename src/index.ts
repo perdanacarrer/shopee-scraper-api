@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { scrapePcEndpoint } from './services/scraper';
+import { scrapePcEndpoint, clearScraperCache, getScraperStats } from './services/scraper';
 import { getProxyStats } from './services/proxy';
 
 dotenv.config();
@@ -15,12 +15,15 @@ app.use(cors());
 
 // Health check
 app.get('/health', (_req: Request, res: Response) => {
+  const stats = getScraperStats();
   res.json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    service: 'Shopee Scraper API',
+    service: 'Shopee Scraper API v2.0',
     environment: NODE_ENV,
-    scraperAPI: process.env.USE_SCRAPER_API === 'true' ? 'ENABLED' : 'DISABLED',
+    mode: 'Direct HTTP + Cheerio HTML Parser',
+    thirdPartyAPI: false,
+    cache: stats,
     proxy: getProxyStats()
   });
 });
@@ -49,8 +52,65 @@ app.get('/shopee', async (req: Request, res: Response) => {
   }
 });
 
+// Batch scraping endpoint
+app.post('/shopee/batch', async (req: Request, res: Response) => {
+  try {
+    const { items } = req.body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        error: 'Invalid request',
+        required: { items: 'Array of {storeid, dealid}' }
+      });
+    }
+
+    const results = [];
+    for (const item of items) {
+      try {
+        const data = await scrapePcEndpoint(String(item.storeid), String(item.dealid));
+        results.push({
+          storeid: item.storeid,
+          dealid: item.dealid,
+          success: true,
+          data
+        });
+      } catch (error: any) {
+        results.push({
+          storeid: item.storeid,
+          dealid: item.dealid,
+          success: false,
+          error: error.message
+        });
+      }
+    }
+
+    return res.json({
+      total: items.length,
+      successful: results.filter(r => r.success).length,
+      failed: results.filter(r => !r.success).length,
+      results
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      error: 'Batch processing failed',
+      message: error.message
+    });
+  }
+});
+
+// Clear cache endpoint
+app.post('/cache/clear', (_req: Request, res: Response) => {
+  clearScraperCache();
+  res.json({
+    status: 'ok',
+    message: 'Cache cleared',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Config endpoint
 app.get('/config', (_req: Request, res: Response) => {
+  const stats = getScraperStats();
   res.json({
     environment: NODE_ENV,
     port: PORT,
@@ -58,14 +118,33 @@ app.get('/config', (_req: Request, res: Response) => {
       timeout: parseInt(process.env.SCRAPER_TIMEOUT || '30000', 10),
       retries: parseInt(process.env.SCRAPER_RETRIES || '3', 10),
       retryDelay: parseInt(process.env.SCRAPER_RETRY_DELAY || '1000', 10),
-      rateLimit: parseInt(process.env.SCRAPER_RATE_LIMIT || '10', 10)
+      rateLimit: parseInt(process.env.SCRAPER_RATE_LIMIT || '5', 10)
     },
-    scraperAPI: {
-      enabled: process.env.USE_SCRAPER_API === 'true',
-      keyConfigured: !!process.env.SCRAPER_API_KEY
+    cache: {
+      ttl: parseInt(process.env.CACHE_TTL || '600', 10),
+      currentSize: stats.cacheSize
     },
+    scraping: {
+      type: 'Direct HTTP + Cheerio HTML Parser',
+      memory: 'Lightweight - No Browser Engine',
+      thirdPartyAPI: false
+    },
+    proxy: getProxyStats()
+  });
+});
+
+// Stats endpoint
+app.get('/stats', (_req: Request, res: Response) => {
+  const stats = getScraperStats();
+  res.json({
+    timestamp: new Date().toISOString(),
+    cache: stats,
     proxy: getProxyStats(),
-    userAgentsCount: (process.env.USER_AGENTS || '').split(',').length
+    memory: {
+      heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + ' MB',
+      heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) + ' MB',
+      uptime: Math.round(process.uptime()) + ' seconds'
+    }
   });
 });
 
@@ -73,33 +152,51 @@ app.get('/config', (_req: Request, res: Response) => {
 app.get('/info', (_req: Request, res: Response) => {
   res.json({
     name: 'Shopee Scraper API',
-    version: '1.0.0',
+    version: '2.0.0',
+    description: 'Lightweight Shopee product scraper - No third-party APIs, no browser engine',
+    technology: 'Axios + Cheerio + Express.js',
+    memory: 'Minimal ~50-100MB (vs 300-500MB with Puppeteer)',
     endpoints: {
       health: '/health',
       config: '/config',
-      scrape: '/shopee?storeid={STORE_ID}&dealid={PRODUCT_ID}',
-      info: '/info'
+      scrape: 'GET /shopee?storeid={STORE_ID}&dealid={PRODUCT_ID}',
+      batch: 'POST /shopee/batch',
+      stats: '/stats',
+      cacheControl: 'POST /cache/clear'
     },
-    scraperMode: process.env.USE_SCRAPER_API === 'true' ? 'ScraperAPI' : 'Direct Proxy',
-    notes: 'Configure SCRAPER_API_KEY in .env for best results'
+    features: [
+      'Direct Shopee API calls',
+      'HTML parsing with Cheerio',
+      'Retry with exponential backoff',
+      'User agent rotation',
+      'In-memory caching',
+      'Rate limiting',
+      'Proxy support',
+      'Batch processing'
+    ]
   });
 });
 
 const server = app.listen(PORT, () => {
   const protocol = 'http';
   const host = 'localhost';
-  const mode = process.env.USE_SCRAPER_API === 'true' ? '🤖 ScraperAPI Mode' : '🔗 Direct Proxy Mode';
   
   console.log(`\n${'='.repeat(60)}`);
-  console.log(`  Shopee Scraper API - ${mode}`);
+  console.log(`  Shopee Scraper API v2.0 (Lightweight)`);
+  console.log(`  🔗 Direct HTTP Scraper + Cheerio HTML Parser`);
+  console.log(`  ✓ No Third-Party APIs`);
+  console.log(`  ✓ No Browser Engine (~50MB memory)`);
   console.log(`${'='.repeat(60)}`);
   console.log(`\nEnvironment: ${NODE_ENV}`);
   console.log(`Server running on: ${protocol}://${host}:${PORT}`);
   console.log(`\nAvailable endpoints:`);
-  console.log(`  • Health:  ${protocol}://${host}:${PORT}/health`);
-  console.log(`  • Config:  ${protocol}://${host}:${PORT}/config`);
-  console.log(`  • Scrape:  ${protocol}://${host}:${PORT}/shopee?storeid={STORE_ID}&dealid={PRODUCT_ID}`);
-  console.log(`  • Info:    ${protocol}://${host}:${PORT}/info`);
+  console.log(`  • Health:      ${protocol}://${host}:${PORT}/health`);
+  console.log(`  • Scrape:      ${protocol}://${host}:${PORT}/shopee?storeid={STORE_ID}&dealid={PRODUCT_ID}`);
+  console.log(`  • Batch:       POST ${protocol}://${host}:${PORT}/shopee/batch`);
+  console.log(`  • Config:      ${protocol}://${host}:${PORT}/config`);
+  console.log(`  • Stats:       ${protocol}://${host}:${PORT}/stats`);
+  console.log(`  • Clear Cache: POST ${protocol}://${host}:${PORT}/cache/clear`);
+  console.log(`  • Info:        ${protocol}://${host}:${PORT}/info`);
   console.log(`\n${'='.repeat(60)}\n`);
 });
 

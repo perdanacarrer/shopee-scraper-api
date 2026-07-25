@@ -1,7 +1,7 @@
 {
   "name": "shopee-scraper-api",
-  "version": "1.0.0",
-  "description": "Undetectable Shopee Web Scraper API",
+  "version": "2.0.0",
+  "description": "Lightweight Shopee Taiwan Product Scraper - No Third Party APIs",
   "main": "src/index.ts",
   "scripts": {
     "dev": "ts-node src/index.ts",
@@ -14,29 +14,28 @@
     "shopee",
     "scraper",
     "api",
-    "web-scraping"
+    "web-scraping",
+    "lightweight",
+    "no-browser"
   ],
   "author": "Perdana Carrer",
   "license": "MIT",
   "dependencies": {
     "axios": "^1.6.5",
+    "cheerio": "^1.0.0-rc.12",
     "cors": "^2.8.6",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "http-proxy-agent": "^9.1.0",
     "https-proxy-agent": "^9.1.0",
-    "puppeteer": "^21.0.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "user-agents": "^1.0.1025",
-    "uuid": "^9.0.0"
+    "user-agents": "^1.0.1025"
   },
   "devDependencies": {
+    "@types/cheerio": "^0.22.35",
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.17",
     "@types/jest": "^29.5.2",
     "@types/node": "^20.3.1",
-    "@types/user-agents": "^1.0.4",
     "@typescript-eslint/eslint-plugin": "^5.59.11",
     "@typescript-eslint/parser": "^5.59.11",
     "eslint": "^8.43.0",
