@@ -1,5 +1,7 @@
 import http from 'http';
 import https from 'https';
+import { HttpProxyAgent } from 'http-proxy-agent';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -18,12 +20,12 @@ const proxyConfig: ProxyConfig = {
   currentIndex: 0
 };
 
-// Initialize proxy list
+// Initialize proxy list (optional - only used if you own/rent proxies yourself)
 if (process.env.PROXY_LIST) {
-  proxyConfig.list = process.env.PROXY_LIST.split(',').map(p => {
-    const proxy = p.trim();
-    return proxy.startsWith('http') ? proxy : `http://${proxy}`;
-  });
+  proxyConfig.list = process.env.PROXY_LIST.split(',')
+    .map(p => p.trim())
+    .filter(Boolean)
+    .map(proxy => (proxy.startsWith('http') ? proxy : `http://${proxy}`));
   console.log(`[PROXY] Loaded ${proxyConfig.list.length} proxies`);
 }
 
@@ -47,48 +49,39 @@ function getNextProxy(): string | null {
     const proxy = proxyConfig.list[proxyConfig.currentIndex];
     proxyConfig.currentIndex = (proxyConfig.currentIndex + 1) % proxyConfig.list.length;
     return proxy;
-  } else {
-    const randomIndex = Math.floor(Math.random() * proxyConfig.list.length);
-    return proxyConfig.list[randomIndex];
   }
+
+  // Random strategy
+  const randomIndex = Math.floor(Math.random() * proxyConfig.list.length);
+  return proxyConfig.list[randomIndex];
 }
 
-export function createProxyAgent(protocol: 'http' | 'https'): http.Agent | https.Agent {
-  const AgentClass = protocol === 'http' ? http.Agent : https.Agent;
+const timeout = parseInt(process.env.SCRAPER_TIMEOUT || '30000', 10);
 
+// Small, memory-friendly agent pool: one plain keep-alive agent per protocol,
+// reused across all requests instead of creating a new agent per call.
+const plainHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 20, timeout });
+const plainHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 20, timeout });
+
+export function createProxyAgent(protocol: 'http' | 'https'): http.Agent | https.Agent {
   if (!proxyConfig.enabled) {
-    console.log(`[PROXY] Proxy disabled - using direct connection`);
-    return new AgentClass({
-      keepAlive: true,
-      keepAliveMsecs: 1000,
-      maxSockets: 50,
-      maxFreeSockets: 10,
-      timeout: parseInt(process.env.SCRAPER_TIMEOUT || '30000', 10)
-    });
+    return protocol === 'http' ? plainHttpAgent : plainHttpsAgent;
   }
 
   const proxyUrl = getNextProxy();
-  
+
   if (!proxyUrl) {
-    console.warn('[PROXY] ⚠️  PROXY_ENABLED=true but no proxy URLs found');
-    return new AgentClass({
-      keepAlive: true,
-      keepAliveMsecs: 1000,
-      maxSockets: 50,
-      maxFreeSockets: 10,
-      timeout: parseInt(process.env.SCRAPER_TIMEOUT || '30000', 10)
-    });
+    console.warn('[PROXY] PROXY_ENABLED=true but no PROXY_URL/PROXY_LIST configured, falling back to direct connection');
+    return protocol === 'http' ? plainHttpAgent : plainHttpsAgent;
   }
 
-  console.log(`[PROXY] Using proxy: ${proxyUrl}`);
+  console.log(`[PROXY] Routing ${protocol.toUpperCase()} request through: ${proxyUrl}`);
 
-  return new AgentClass({
-    keepAlive: true,
-    keepAliveMsecs: 1000,
-    maxSockets: 50,
-    maxFreeSockets: 10,
-    timeout: parseInt(process.env.SCRAPER_TIMEOUT || '30000', 10)
-  });
+  // A fresh agent per call is required here because rotation means the
+  // upstream proxy can change request-to-request.
+  return protocol === 'http'
+    ? new HttpProxyAgent(proxyUrl, { timeout })
+    : new HttpsProxyAgent(proxyUrl, { timeout });
 }
 
 export function getProxyStats(): {
