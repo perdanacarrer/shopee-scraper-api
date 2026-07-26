@@ -30,6 +30,10 @@ An undetectable, scalable API for scraping Shopee Taiwan product data with anti-
 - Node.js 16+
 - npm or yarn
 
+### Important Note
+- Switch to a paid residential proxy that is genuinely from Taiwan, change value PROXY_URL and PROXY_LIST in .env.example before you do cp .env.example .env
+- If you encounter error 90309999, it is likely because your current IP address has been flagged as "suspicious." Try using a new or clean IP address or proxy.  
+
 ### Setup
 
 ```bash
