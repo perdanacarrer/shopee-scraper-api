@@ -1,7 +1,9 @@
 import http from 'http';
 import https from 'https';
-import { HttpProxyAgent } from 'http-proxy-agent';
-import { HttpsProxyAgent } from 'https-proxy-agent';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { HttpProxyAgent } = require('http-proxy-agent');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { HttpsProxyAgent } = require('https-proxy-agent');
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -20,12 +22,12 @@ const proxyConfig: ProxyConfig = {
   currentIndex: 0
 };
 
-// Initialize proxy list (optional - only used if you own/rent proxies yourself)
+// Initialize proxy list
 if (process.env.PROXY_LIST) {
-  proxyConfig.list = process.env.PROXY_LIST.split(',')
-    .map(p => p.trim())
-    .filter(Boolean)
-    .map(proxy => (proxy.startsWith('http') ? proxy : `http://${proxy}`));
+  proxyConfig.list = process.env.PROXY_LIST.split(',').map(p => {
+    const proxy = p.trim();
+    return proxy.startsWith('http') ? proxy : `http://${proxy}`;
+  });
   console.log(`[PROXY] Loaded ${proxyConfig.list.length} proxies`);
 }
 
@@ -36,7 +38,7 @@ if (process.env.PROXY_URL) {
   console.log(`[PROXY] Single proxy configured`);
 }
 
-function getNextProxy(): string | null {
+export function getNextProxy(): string | null {
   if (proxyConfig.url) {
     return proxyConfig.url;
   }
@@ -49,39 +51,50 @@ function getNextProxy(): string | null {
     const proxy = proxyConfig.list[proxyConfig.currentIndex];
     proxyConfig.currentIndex = (proxyConfig.currentIndex + 1) % proxyConfig.list.length;
     return proxy;
+  } else {
+    // Random strategy
+    const randomIndex = Math.floor(Math.random() * proxyConfig.list.length);
+    return proxyConfig.list[randomIndex];
   }
-
-  // Random strategy
-  const randomIndex = Math.floor(Math.random() * proxyConfig.list.length);
-  return proxyConfig.list[randomIndex];
 }
 
-const timeout = parseInt(process.env.SCRAPER_TIMEOUT || '30000', 10);
-
-// Small, memory-friendly agent pool: one plain keep-alive agent per protocol,
-// reused across all requests instead of creating a new agent per call.
-const plainHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 20, timeout });
-const plainHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 20, timeout });
-
 export function createProxyAgent(protocol: 'http' | 'https'): http.Agent | https.Agent {
+  const AgentClass = protocol === 'http' ? http.Agent : https.Agent;
+  const timeout = parseInt(process.env.SCRAPER_TIMEOUT || '30000', 10);
+
   if (!proxyConfig.enabled) {
-    return protocol === 'http' ? plainHttpAgent : plainHttpsAgent;
+    console.log(`[PROXY] Proxy disabled`);
+    return new AgentClass({
+      keepAlive: true,
+      keepAliveMsecs: 1000,
+      maxSockets: 50,
+      maxFreeSockets: 10,
+      timeout
+    });
   }
 
   const proxyUrl = getNextProxy();
 
   if (!proxyUrl) {
-    console.warn('[PROXY] PROXY_ENABLED=true but no PROXY_URL/PROXY_LIST configured, falling back to direct connection');
-    return protocol === 'http' ? plainHttpAgent : plainHttpsAgent;
+    console.warn('[PROXY] ⚠️  PROXY_ENABLED=true but no proxy URLs found');
+    return new AgentClass({
+      keepAlive: true,
+      keepAliveMsecs: 1000,
+      maxSockets: 50,
+      maxFreeSockets: 10,
+      timeout
+    });
   }
 
-  console.log(`[PROXY] Routing ${protocol.toUpperCase()} request through: ${proxyUrl}`);
+  console.log(`[PROXY] Using proxy: ${proxyUrl}`);
 
-  // A fresh agent per call is required here because rotation means the
-  // upstream proxy can change request-to-request.
+  // BUG FIX: this used to build a plain (non-proxying) Agent, so
+  // PROXY_ENABLED/PROXY_URL/PROXY_LIST had no actual effect on outgoing
+  // requests. HttpProxyAgent/HttpsProxyAgent are the packages that were
+  // already in package.json for exactly this purpose but were unused.
   return protocol === 'http'
-    ? new HttpProxyAgent(proxyUrl, { timeout })
-    : new HttpsProxyAgent(proxyUrl, { timeout });
+    ? (new HttpProxyAgent(proxyUrl, { keepAlive: true, timeout }) as unknown as http.Agent)
+    : (new HttpsProxyAgent(proxyUrl, { keepAlive: true, timeout }) as unknown as https.Agent);
 }
 
 export function getProxyStats(): {
